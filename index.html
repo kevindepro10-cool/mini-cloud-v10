@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mini Cloud V10 Icons + Import</title>
+<style>
+body{font-family:Arial;background:linear-gradient(135deg,#4f46e5,#3b82f6);margin:0;}
+.hidden{display:none;}
+.auth-box{width:380px;margin:120px auto;background:white;padding:30px;border-radius:15px;box-shadow:0 5px 20px rgba(0,0,0,0.2);}
+input{width:100%;padding:10px;margin:6px 0;}
+button{padding:8px 14px;border:none;border-radius:8px;background:#4f46e5;color:white;cursor:pointer;}
+#cloud{background:white;max-width:1200px;margin:20px auto;padding:20px;border-radius:15px;box-shadow:0 5px 20px rgba(0,0,0,0.2);}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;}
+.item{padding:6px;border-radius:6px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px;}
+.item:hover{background:#eef2ff;}
+.selected{background:#c7d2fe;}
+.path{margin:8px 0;color:#555;}
+#editor{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;padding:20px;border-radius:12px;width:400px;box-shadow:0 10px 30px rgba(0,0,0,0.3);}
+textarea{width:100%;height:200px;}
+#contextMenu{position:absolute;background:white;border:1px solid #ccc;border-radius:8px;box-shadow:0 5px 15px rgba(0,0,0,0.2);display:none;z-index:999;}
+#contextMenu div{padding:8px 15px;cursor:pointer;}
+#contextMenu div:hover{background:#eef2ff;}
+.item img{width:20px;height:20px;}
+</style>
+</head>
+<body>
+
+<!-- Login / Registrierung -->
+<div class="auth-box" id="authBox">
+<h2 id="authTitle">Login</h2>
+<input id="authUser" placeholder="Username">
+<input id="authPass" type="password" placeholder="Passwort">
+<button onclick="auth()">Login</button>
+<button onclick="toggle()">Registrieren</button>
+</div>
+
+<!-- Cloud -->
+<div id="cloud" class="hidden">
+<h3 id="welcome"></h3>
+<div id="storageInfo"></div>
+<div class="toolbar">
+<select id="adminSelect" class="hidden" onchange="switchUser()"></select>
+<button id="deleteUserBtn" class="hidden" onclick="deleteUser()">🗑 Account löschen</button>
+<button onclick="goBack()">🔙 Zurück</button>
+<button onclick="createFolder()">📁 Ordner</button>
+<button onclick="createFile()">📄 Datei</button>
+<button onclick="importFiles()">📤 Importieren</button>
+<input type="file" id="fileInput" multiple class="hidden">
+<button onclick="logout()">Logout</button>
+</div>
+<div class="path" id="path"></div>
+<div id="content"></div>
+</div>
+
+<!-- Editor -->
+<div id="editor" class="hidden">
+<h4>Datei bearbeiten</h4>
+<textarea id="editorText"></textarea>
+<button onclick="saveFile()">Speichern</button>
+<button onclick="closeEditor()">Schließen</button>
+</div>
+
+<!-- Kontextmenü -->
+<div id="contextMenu">
+<div onclick="openSelected()">📂 Öffnen</div>
+<div onclick="renameSelected()">✏ Umbenennen</div>
+<div onclick="deleteSelected()">🗑 Löschen</div>
+<div onclick="downloadSelected()">⬇ Download</div>
+</div>
+
+<script>
+let mode="login", currentUser=null, viewUser=null, currentPath=[], selected=[], editingFile=null;
+
+/* INIT ADMIN */
+(function(){
+let u=JSON.parse(localStorage.getItem("cloudUsers"))||{};
+u["kevindepro10"]={password:"kevin123",role:"admin",cloud:u["kevindepro10"]?.cloud||{root:{}}};
+localStorage.setItem("cloudUsers",JSON.stringify(u));
+})();
+
+function users(){return JSON.parse(localStorage.getItem("cloudUsers"));}
+function save(u){localStorage.setItem("cloudUsers",JSON.stringify(u));}
+
+/* AUTH */
+function toggle(){mode=mode==="login"?"register":"login"; authTitle.innerText=mode==="login"?"Login":"Registrieren";}
+function auth(){
+    let u=users(), name=authUser.value.trim(), pass=authPass.value.trim();
+    if(mode==="login"){
+        if(!u[name]||u[name].password!==pass) return alert("Falsch");
+        currentUser=name; viewUser=name; start();
+    }else{
+        if(u[name]) return alert("Existiert");
+        u[name]={password:pass,role:"user",cloud:{root:{}}};
+        save(u); alert("Registriert"); toggle();
+    }
+}
+function start(){authBox.classList.add("hidden"); cloud.classList.remove("hidden"); setupAdmin(); render();}
+function logout(){location.reload();}
+
+/* ADMIN */
+function setupAdmin(){
+    let u = users();
+    if(u[currentUser].role !== "admin") return;
+    adminSelect.classList.remove("hidden");
+    document.getElementById("deleteUserBtn").classList.remove("hidden");
+    adminSelect.innerHTML = "";
+    Object.keys(u).forEach(name=>{
+        let o = document.createElement("option");
+        o.value = name;
+        o.text = name;
+        adminSelect.appendChild(o);
+    });
+    adminSelect.value = viewUser;
+}
+function switchUser(){viewUser=adminSelect.value; currentPath=[]; render();}
+function deleteUser(){
+    if(viewUser === currentUser){alert("❌ Du kannst dich selbst nicht löschen!"); return;}
+    if(!confirm("Willst du den Account '"+viewUser+"' wirklich löschen? Alle Daten gehen verloren!")) return;
+    let u = users(); delete u[viewUser]; save(u);
+    viewUser = currentUser; setupAdmin(); currentPath = []; render(); alert("Account gelöscht!");
+}
+
+/* FS */
+function getFolderByPath(pathArr){
+    let folder=users()[viewUser].cloud.root;
+    for(let i=0;i<pathArr.length;i++){
+        let p=pathArr[i];
+        if(!folder[p]) folder[p]={type:"folder", content:{}};
+        folder=folder[p].content;
+    }
+    return folder;
+}
+function currentFolder(){return getFolderByPath(currentPath);}
+function calculateSize(folder){let size=0; Object.values(folder).forEach(item=>{if(item.type==="file") size+=new Blob([item.content]).size; else size+=calculateSize(item.content);}); return size;}
+
+/* RENDER mit Icons */
+function render(){
+    selected=[]; 
+    let folder=currentFolder(); 
+    content.innerHTML=""; 
+    path.innerText="/"+currentPath.join("/");
+    storageInfo.innerText="📊 Genutzt: "+(calculateSize(users()[viewUser].cloud.root)/1024/1024).toFixed(2)+" MB";
+
+    Object.keys(folder).forEach(name=>{
+        let item = folder[name]; 
+        let div = document.createElement("div"); 
+        div.className="item"; 
+        div.draggable=true;
+
+        // Icon
+        let icon="";
+        if(item.type==="folder") icon="📁";
+        else{
+            let ext = name.split('.').pop().toLowerCase();
+            if(ext==="html") icon="<img src='icons/html.png'>";
+            else if(ext==="css") icon="<img src='icons/css.png'>";
+            else if(ext==="js") icon="<img src='icons/js.png'>";
+            else if(ext==="png"||ext==="jpg"||ext==="jpeg") icon="<img src='icons/bild.png'>";
+            else if(ext==="txt") icon="<img src='icons/txt.png'>";
+            else icon="<img src='icons/file.png'>";
+        }
+
+        div.innerHTML = icon + " " + name;
+
+        div.onclick=e=>selectItem(e,name);
+        div.ondblclick=()=>item.type==="folder"?openFolder(name):openEditor(name);
+
+        div.oncontextmenu=e=>{
+            e.preventDefault(); if(!selected.includes(name)) selected=[name]; updateSelection(); showMenu(e.pageX,e.pageY);
+        };
+
+        div.ondragstart=e=>{
+            if(!selected.includes(name)) selected.push(name);
+            updateSelection();
+            e.dataTransfer.setData("text/plain","drag");
+        };
+        div.ondragover=e=>e.preventDefault();
+        div.ondrop=e=>{
+            e.preventDefault();
+            if(item.type==="folder") moveItems(name,e.ctrlKey);
+        };
+        content.appendChild(div);
+    });
+}
+
+/* Auswahl & Multi-Select */
+function selectItem(e,name){if(e.ctrlKey){selected.includes(name)?selected=selected.filter(x=>x!==name):selected.push(name);}else selected=[name]; updateSelection();}
+function updateSelection(){[...content.children].forEach(d=>{let name=d.innerText.slice(2); d.classList.toggle("selected",selected.includes(name));});}
+
+/* Drag & Drop robust + STRG = Copy */
+function moveItems(targetName,copy=false){
+    let u=users(), source=currentFolder(), target=source[targetName];
+    if(!target||target.type!=="folder") return;
+    selected.forEach(name=>{
+        if(name===targetName) return;
+        let item=source[name];
+        if(item.type==="folder"&&isInside(item,target)){alert("❌ Kann Ordner nicht in eigenen Unterordner verschieben!"); return;}
+        if(target.content[name]){alert("⚠ Name existiert bereits im Ziel: "+name); return;}
+        if(copy) target.content[name+"_copy"]=JSON.parse(JSON.stringify(item));
+        else{ target.content[name]=item; delete source[name]; }
+    });
+    save(u); render();
+}
+function isInside(folder,target){if(folder===target) return true; if(folder.type!=="folder") return false; for(let k in folder.content) if(isInside(folder.content[k],target)) return true; return false;}
+
+/* Kontextmenü */
+function showMenu(x,y){contextMenu.style.left=x+"px"; contextMenu.style.top=y+"px"; contextMenu.style.display="block";}
+document.onclick=()=>contextMenu.style.display="none";
+function openSelected(){let f=currentFolder(); let item=f[selected[0]]; if(item.type==="folder") openFolder(selected[0]); else openEditor(selected[0]);}
+function renameSelected(){let f=currentFolder(); selected.forEach(name=>{let n=prompt("Neuer Name:",name); if(n&&n!==name){f[n]=f[name]; delete f[name];}}); save(users()); render();}
+function deleteSelected(){if(selected.length===0) return alert("⚠ Keine Elemente ausgewählt!"); if(!confirm("Willst du die ausgewählten Elemente wirklich löschen?")) return; let u=users(); let folder=u[viewUser].cloud.root; for(let p of currentPath) folder=folder[p].content; selected.forEach(name => { if(folder[name]) delete folder[name]; }); save(u); selected=[]; render();}
+function downloadSelected(){let folder = currentFolder(); selected.forEach(name=>{let item = folder[name]; if(item.type==="file"){let blob = new Blob([item.content],{type:"text/plain"}); let a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click();}});}
+
+/* Import-Funktion */
+function importFiles(){
+    const input = document.getElementById("fileInput");
+    input.value = "";
+    input.click();
+    input.onchange = e => {
+        const files = Array.from(e.target.files);
+        if(files.length === 0) return;
+        let u = users();
+        let folder = u[viewUser].cloud.root;
+        for(let p of currentPath) folder = folder[p].content;
+
+        files.forEach(file => {
+            if(folder[file.name]){
+                alert("⚠ Datei existiert bereits: "+file.name);
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = ev => {
+                folder[file.name] = {type:"file", content:ev.target.result};
+                save(u);
+                render();
+            };
+            // Für Textdateien
+            reader.readAsText(file);
+        });
+    }
+}
+
+/* Navigation */
+function openFolder(name){currentPath.push(name); render();}
+function goBack(){if(currentPath.length>0){currentPath.pop(); render();}}
+
+/* Datei / Ordner erstellen */
+function createFolder(){let name=prompt("Ordnername:"); if(!name) return; let u=users(); let folder=u[viewUser].cloud.root; for(let i=0;i<currentPath.length;i++){let p=currentPath[i]; if(!folder[p]) folder[p]={type:"folder",content:{}}; folder=folder[p].content;} if(folder[name]){alert("⚠ Name existiert bereits!"); return;} folder[name]={type:"folder",content:{}}; save(u); render();}
+function createFile(){let name=prompt("Dateiname:"); if(!name) return; let u=users(); let folder=u[viewUser].cloud.root; for(let i=0;i<currentPath.length;i++){let p=currentPath[i]; if(!folder[p]) folder[p]={type:"folder",content:{}}; folder=folder[p].content;} if(folder[name]){alert("⚠ Name existiert bereits!"); return;} folder[name]={type:"file",content:""}; save(u); render();}
+
+/* Editor */
+function openEditor(name){editingFile=name; editorText.value=currentFolder()[name].content; editor.classList.remove("hidden");}
+function saveFile(){currentFolder()[editingFile].content=editorText.value; save(users()); closeEditor(); render();}
+function closeEditor(){editor.classList.add("hidden");}
+</script>
+
+</body>
+</html>
